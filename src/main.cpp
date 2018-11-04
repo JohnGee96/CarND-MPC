@@ -126,15 +126,21 @@ int main() {
           /* Latency handling by initialzing the state with latency term 'dt'
            * x, y and psi are assumed to be 0
            */
+          steer_value *= -1; // Change of sign because turning left is negative sign 
+                            // in simulator but positive yaw for MPC
           px = v * dt; // Reduced from x + v * cos(psi) * dt
           py = 0;      // Reduced from y + v*sin(psi)*dt is 0
-          psi = -v/Lf * steer_value * dt;
+          psi = v/Lf * steer_value * dt;
+          cte += v * sin(epsi) * dt;
+          epsi += v * steer_value * dt/Lf;
 
           Eigen::VectorXd state(6);
           state << px, py, psi, v, cte, epsi;
 
           // Find the optimal solution
           auto vars = mpc.Solve(state, coeffs);
+
+          json msgJson;
 
           //Display the waypoints/reference line
           vector<double> next_x_vals;
@@ -151,7 +157,12 @@ int main() {
             next_y_vals.push_back(polyeval(coeffs, poly_inc*i));
           }
 
-          json msgJson;
+          //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
+          // the points in the simulator are connected by a Yellow line
+
+          msgJson["next_x"] = next_x_vals;
+          msgJson["next_y"] = next_y_vals;
+
           // NOTE: Remember to divide by deg2rad(25) before you send the steering value back.
           // Otherwise the values will be in between [-deg2rad(25), deg2rad(25] instead of [-1, 1].
           steer_value = vars[0]/(deg2rad(25)*Lf);
@@ -162,17 +173,17 @@ int main() {
 
           //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
           // the points in the simulator are connected by a Green line
-
+          for (size_t i = 2; i < vars.size(); i++) {
+              if(i%2 == 0) {
+                mpc_x_vals.push_back(vars[i]);
+              } else {
+                mpc_y_vals.push_back(vars[i]);
+              }
+            }
           msgJson["mpc_x"] = mpc_x_vals;
           msgJson["mpc_y"] = mpc_y_vals;
 
-          //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
-          // the points in the simulator are connected by a Yellow line
-
-          msgJson["next_x"] = next_x_vals;
-          msgJson["next_y"] = next_y_vals;
-
-
+   
           auto msg = "42[\"steer\"," + msgJson.dump() + "]";
           std::cout << msg << std::endl;
           // Latency

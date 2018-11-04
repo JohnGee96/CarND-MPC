@@ -1,7 +1,122 @@
 # CarND-Controls-MPC
-Self-Driving Car Engineer Nanodegree Program
+
+[![Link to Youtube](https://i.ytimg.com/vi/JJqCovkQoMc/hqdefault.jpg?sqp=-oaymwEZCPYBEIoBSFXyq4qpAwsIARUAAIhCGAFwAQ==&rs=AOn4CLA11DWMjJHQcihcwXHAZ6HYXoBCiQ)](https://youtu.be/JJqCovkQoMc)
 
 ---
+
+## Objective
+
+The purpose of this project is to implement a model predictive controller (MPC) to steer a car around a simulated track. The simulator provides a data stream about car's position speed and orientation.
+
+## Model Predictive Control
+
+![mpc algorithm](./img/mpc.png)
+
+The MPC frames the task of following a trajectory as an optimization problem of minimizing a cost function. MPC holds internal representation of the motion model and uses the motion model to evaluate N future states (horizon length) of each actuation combination from an accepted range and picks one that minimizes the cost.
+
+We need to constantly recalculate the optimal trajectory to take into account of errors in the actuators (calculating inputs over a future horizon).
+
+### 1. Vehicle Motion Model
+
+Here we use a kinematic bicycle model to represent the motion of the vehicle. The model neglects inertia, friction, torque and other forces, but is non-linear because it takes into account of the heading direction. There are 6 dimensions in the state of this model:
+
+1. x position
+2. y position
+3. `psi` heading direction
+4. velocity
+5. cross-track error `cte`
+6. orientation error `epsi`
+
+Below are the equation associated with each dimension:
+
+    // x_[t+1] = x[t] + v[t] * cos(psi[t]) * dt
+    // y_[t+1] = y[t] + v[t] * sin(psi[t]) * dt
+    // psi_[t+1] = psi[t] + v[t] / Lf * delta[t] * dt
+    // v_[t+1] = v[t] + a[t] * dt
+    // cte[t+1] = f(x[t]) - y[t] + v[t] * sin(epsi[t]) * dt
+    // epsi[t+1] = psi[t] - psides[t] + v[t] * delta[t] / Lf * dt
+
+For calculating `cte` and `epsi` we can use the following function to simply the above equation:
+
+    cte = desired_y - actual_y
+        = polyeval(coeffs,px)-py
+        = polyeval(coeffs,0)  //because px=py=0
+    epsi =  actual psi-desired psi
+         = psi - atan(coeffs[1]+ coeffs[2]*2*px + ...) 
+         = -atan(coeffs[1])  //because px=psi=0
+
+### 2. Polynomial Fitting
+
+![turn](./img/turn.png)
+
+All computations are done in vehicle's coordinate system, where the origin is the current position of the vehicle, with the x-axis aligned to the current heading position. The waypoints are calculated in the frame of the vehicle after transforming from the origin coordinate. `transformGlobalToLocal()` implements such transformation into the vehicle coordinate system. The transformation is mathematically defined as below:
+
+    X' = cos(psi) * (ptsx[i] - x) + sin(psi) * (ptsy[i] - y);
+    Y' = -sin(psi) * (ptsx[i] - x) + cos(psi) * (ptsy[i] - y);  
+
+where X',Y' denote coordinates in the vehicle coordinate system. Note that the initial position of the car and heading direction are always zero in this frame. Thus the state of the car in the vehicle cordinate system is (**without considering latency**):
+
+    state << 0, 0, 0, v, cte, epsi;
+
+### 3. Prediction Horizon
+
+The prediction horizon is the duration over which future predictions are made. We’ll refer to this as T.
+
+T is the product of two other variables, N and dt.
+
+N is the number of timesteps in the horizon. dt is how much time elapses between actuation.
+
+N, dt, and T are hyperparameters needed to be tuned. There are some general guidelines. T should be as large as possible, while dt should be as small as possible.
+
+These guidelines create tradeoffs.
+Specifically, Short prediction horizons lead to more responsive controllers, but is unstable and less accurate. Long prediction horizons are smoother controllers. 
+
+### 4. Number of Timesteps
+
+The goal of Model Predictive Control is to optimize the control inputs: [δ,a]. An optimizer will tune these inputs until a low cost vector of control inputs is found. The length of this vector is determined by N:
+
+```[δ_1, a_1, δ_2, a_2 , ..., δ_N-1, a_N-1]``
+
+Thus N determines the number of variables optimized by the MPC. This is also the major driver of computational cost.
+
+### 5. Timestep Duration
+
+MPC attempts to approximate a continuous reference trajectory by means of discrete paths between actuations. Larger values of dt result in less frequent actuations, which makes it harder to accurately approximate a continuous reference trajectory. This is sometimes called "discretization error".
+
+A good approach to setting N, dt, and T is to first determine a reasonable range for T and then tune dt and N appropriately, keeping the effect of each in mind.
+
+### 6. Latency
+
+MPC can handle latency in our calculation and computation for optimal control inputs. The motion model can take into account of such latency by adding noise to the elapsed time interval.
+
+In this project, we assume a 100ms latency in between each actuation calculation.
+
+Two common approaches:
+
+1. Based on the car's current position and velocity, propagate the estimated position of the car forward at the expected time when actuation take effects. The trajectory is then determined 
+
+2. The trajectory is solved from the current position and time. To take latency into account, the controls of the previous iteration is restrained for the duration of the latency. In short, the trajectory is computed starting from the time of the last iteration PLUS the latency period.
+
+For this project, I choose the first approach. This is implemented in the `main.cpp` before calling `MPC::Solve()`:
+
+    double delta = j[1]["steering_angle"]; 
+    delta*=-1; //  change of sign because turning left is negative sign in simulator but positive yaw for MPC
+    psi = 0;
+    px = px + v*cos(psi)*latency; 
+    py = py + v*sin(psi)*latency;
+    cte= cte + v*sin(epsi)*latency;
+    epsi = epsi + v*delta*latency/Lf;
+    psi = psi + v*delta*latency/Lf;
+    v = v + a*latency;
+
+This is can be simplified to follow (assume px, py, psi and acceleration to be 0):
+
+    px = v * dt; 
+    py = 0;
+    psi = -v/Lf * steer_value * dt;
+    cte += v * sin(epsi) * dt;
+    epsi += epsi - v * steer_value * dt/Lf;
+
 
 ## Dependencies
 
@@ -46,63 +161,3 @@ is the vehicle starting offset of a straight line (reference). If the MPC implem
 2. The `lake_track_waypoints.csv` file has the waypoints of the lake track. You could use this to fit polynomials and points and see of how well your model tracks curve. NOTE: This file might be not completely in sync with the simulator so your solution should NOT depend on it.
 3. For visualization this C++ [matplotlib wrapper](https://github.com/lava/matplotlib-cpp) could be helpful.)
 4.  Tips for setting up your environment are available [here](https://classroom.udacity.com/nanodegrees/nd013/parts/40f38239-66b6-46ec-ae68-03afd8a601c8/modules/0949fca6-b379-42af-a919-ee50aa304e6a/lessons/f758c44c-5e40-4e01-93b5-1a82aa4e044f/concepts/23d376c7-0195-4276-bdf0-e02f1f3c665d)
-5. **VM Latency:** Some students have reported differences in behavior using VM's ostensibly a result of latency.  Please let us know if issues arise as a result of a VM environment.
-
-## Editor Settings
-
-We've purposefully kept editor configuration files out of this repo in order to
-keep it as simple and environment agnostic as possible. However, we recommend
-using the following settings:
-
-* indent using spaces
-* set tab width to 2 spaces (keeps the matrices in source code aligned)
-
-## Code Style
-
-Please (do your best to) stick to [Google's C++ style guide](https://google.github.io/styleguide/cppguide.html).
-
-## Project Instructions and Rubric
-
-Note: regardless of the changes you make, your project must be buildable using
-cmake and make!
-
-More information is only accessible by people who are already enrolled in Term 2
-of CarND. If you are enrolled, see [the project page](https://classroom.udacity.com/nanodegrees/nd013/parts/40f38239-66b6-46ec-ae68-03afd8a601c8/modules/f1820894-8322-4bb3-81aa-b26b3c6dcbaf/lessons/b1ff3be0-c904-438e-aad3-2b5379f0e0c3/concepts/1a2255a0-e23c-44cf-8d41-39b8a3c8264a)
-for instructions and the project rubric.
-
-## Hints!
-
-* You don't have to follow this directory structure, but if you do, your work
-  will span all of the .cpp files here. Keep an eye out for TODOs.
-
-## Call for IDE Profiles Pull Requests
-
-Help your fellow students!
-
-We decided to create Makefiles with cmake to keep this project as platform
-agnostic as possible. Similarly, we omitted IDE profiles in order to we ensure
-that students don't feel pressured to use one IDE or another.
-
-However! I'd love to help people get up and running with their IDEs of choice.
-If you've created a profile for an IDE that you think other students would
-appreciate, we'd love to have you add the requisite profile files and
-instructions to ide_profiles/. For example if you wanted to add a VS Code
-profile, you'd add:
-
-* /ide_profiles/vscode/.vscode
-* /ide_profiles/vscode/README.md
-
-The README should explain what the profile does, how to take advantage of it,
-and how to install it.
-
-Frankly, I've never been involved in a project with multiple IDE profiles
-before. I believe the best way to handle this would be to keep them out of the
-repo root to avoid clutter. My expectation is that most profiles will include
-instructions to copy files to a new location to get picked up by the IDE, but
-that's just a guess.
-
-One last note here: regardless of the IDE used, every submitted project must
-still be compilable with cmake and make./
-
-## How to write a README
-A well written README file can enhance your project and portfolio.  Develop your abilities to create professional README files by completing [this free course](https://www.udacity.com/course/writing-readmes--ud777).
